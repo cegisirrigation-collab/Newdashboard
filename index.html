@@ -135,7 +135,7 @@ header {
 /* ================= LAYOUT SLOTS ================= */
 #dashboard {
     flex: 1;
-    padding: 1.5vh 1.5vw;
+    padding: 0.25vh 0.25vw;
     display: flex;
     justify-content: center;
     align-items: center;
@@ -149,14 +149,14 @@ header {
     border: 4px solid var(--card-border);
     display: flex;
     flex-direction: column;
-    padding: 2vh 2vw;
+    padding: 1vh 1vw;
     box-shadow: var(--shadow-preset);
 }
 
 .station-container {
     text-align: center;
     margin-bottom: 0;
-    min-height: 6vh;
+    min-height: 4vh;
     display: flex;
     flex-direction: Row;
     justify-content: center;
@@ -192,7 +192,7 @@ header {
     justify-content: space-between;
     align-items:center;
     border-right:No border;
-    padding-right: 3px;
+    padding-right: 1px;
 }
 
 .gauge-container {
@@ -327,9 +327,9 @@ body.day-mode .water-level-label { color: #0046e0; }
 }
 
 .rain-details { display: flex; flex-direction: column; }
-.rain-title { color: #11dfff; font-size: 1.6rem; font-weight: 900; text-transform: uppercase; }
+.rain-title { color: #11dfff; font-size: 1.2rem; font-weight: 900; text-transform: uppercase; }
 body.day-mode .rain-title { color: #0046e0; }
-.rain-subtitle { color: var(--sub-text); font-size: 1.1rem; font-weight: 800; text-transform: uppercase; }
+.rain-subtitle { color: var(--sub-text); font-size: 1.rem; font-weight: 800; text-transform: uppercase; }
 
 .rain-icon { font-size: 3.5rem; color: #11dfff; opacity: 0.8; }
 body.day-mode .rain-icon { color: #0053d6; }
@@ -337,7 +337,7 @@ body.day-mode .rain-icon { color: #0053d6; }
 .rain-value-wrapper { text-align: right; }
 .rain-value { font-size: 4.8rem; font-weight: 950; color: #11dfff; line-height: 1; }
 body.day-mode .rain-value { color: #000000; }
-.rain-unit { font-size: 1.5rem; font-weight: 800; color: var(--sub-text); }
+.rain-unit { font-size: 1rem; font-weight: 800; color: var(--sub-text); }
 
 /* STATUS ALERTS */
 .normal-level { color: var(--green); }
