@@ -730,33 +730,11 @@ function renderSlide(){
    Everything drawn frame-by-frame via requestAnimationFrame.
 ═══════════════════════════════════════════════════════════ */
 
-let _raf = null;          // master animation frame handle
-let _animState = null;    // current animation state object
-
-/* ── easing ── */
-function easeOutExpo(t) { return t === 1 ? 1 : 1 - Math.pow(2, -10 * t); }
-function easeOutBounce(t) {
-    const n1 = 7.5625, d1 = 2.75;
-    if (t < 1/d1)       return n1*t*t;
-    if (t < 2/d1)       return n1*(t-=1.5/d1)*t+0.75;
-    if (t < 2.5/d1)     return n1*(t-=2.25/d1)*t+0.9375;
-    return n1*(t-=2.625/d1)*t+0.984375;
-}
-function easeInOutSine(t) { return -(Math.cos(Math.PI*t)-1)/2; }
+let _raf = null;          // animation frame handle (kept for cleanup compat)
 
 /* ── map a data value to canvas pixel Y ── */
 function valToY(val, yMin, yMax, top, bottom) {
     return bottom - ((val - yMin) / (yMax - yMin)) * (bottom - top);
-}
-
-/* ── catmull-rom spline: get point on curve between p1 and p2 ── */
-function catmullRom(p0, p1, p2, p3, t) {
-    return 0.5 * (
-        (2*p1) +
-        (-p0 + p2)*t +
-        (2*p0 - 5*p1 + 4*p2 - p3)*t*t +
-        (-p0 + 3*p1 - 3*p2 + p3)*t*t*t
-    );
 }
 
 function buildHistoricalGraph(historyRecords, th, hasGauge, currentGaugeName) {
@@ -813,422 +791,279 @@ function buildHistoricalGraph(historyRecords, th, hasGauge, currentGaugeName) {
     /* ── layout margins ── */
     const PAD  = { top: 32, right: 80, bottom: 54, left: 72 };
 
-    /* ── animation state ── */
-    //  Phase 0 (0–0.25): bars rise from bottom
-    //  Phase 1 (0.20–0.75): line draws left→right
-    //  Phase 2 (0.70–1.00): threshold lines sweep in + points pop
-    //  After complete: idle RAF for flowing dash + point pulses
-    const START = performance.now();
-    const TOTAL_MS = 2000;   // total intro animation ms
+    /* ── size canvas to its CSS box ── */
+    const W = canvas.offsetWidth;
+    const H = canvas.offsetHeight;
+    canvas.width  = W;
+    canvas.height = H;
+    ctx.clearRect(0, 0, W, H);
 
-    /* per-point pop timing (staggered after line arrives at that point) */
-    const ptPop = new Float32Array(n);   // 0→1 scale for each point dot
+    const L = PAD.left, R = W - PAD.right;
+    const T = PAD.top,  B = H - PAD.bottom;
+    const CW = R - L,   CH = B - T;
 
-    /* ── main draw function ── */
-    function draw(now) {
-        const W = canvas.offsetWidth;
-        const H = canvas.offsetHeight;
-        if (canvas.width !== W || canvas.height !== H) {
-            canvas.width  = W;
-            canvas.height = H;
-        }
-        ctx.clearRect(0, 0, W, H);
+    /* x / y pixel positions */
+    const xs = Array.from({length:n}, (_,i) => L + (i/(n-1||1)) * CW);
+    const ys = wlRaw.map(v => valToY(v, wlMin, wlMax, T, B));
+    const yr = rfRaw.map(v => valToY(v, rfMin, rfMax, T, B));
 
-        const L = PAD.left, R = W - PAD.right;
-        const T = PAD.top,  B = H - PAD.bottom;
-        const CW = R - L,   CH = B - T;
+    /* ════════ GRID + AXES ════════ */
+    ctx.save();
 
-        /* elapsed 0→1 */
-        const raw = Math.min((now - START) / TOTAL_MS, 1);
-        const done = raw >= 1;
-
-        /* phase fractions */
-        const barProg  = easeOutExpo(Math.min(raw / 0.28, 1));
-        const lineProg = easeOutExpo(Math.min(Math.max((raw - 0.18) / 0.55, 0), 1));
-        const thProg   = easeOutExpo(Math.min(Math.max((raw - 0.68) / 0.32, 0), 1));
-
-        /* x positions for each data point */
-        const xs = Array.from({length:n}, (_,i) => L + (i/(n-1||1)) * CW);
-        /* y positions for water level */
-        const ys = wlRaw.map(v => valToY(v, wlMin, wlMax, T, B));
-        /* y positions for rain (right axis) */
-        const yr = rfRaw.map(v => valToY(v, rfMin, rfMax, T, B));
-
-        /* how far along the line the cursor is (in point-index units) */
-        const cursorIdx = lineProg * (n - 1);
-
-        /* ════════ GRID + AXES ════════ */
-        ctx.save();
-
-        /* y-axis grid lines & labels (water level, left) */
-        const wlTicks = 5;
-        for (let i = 0; i <= wlTicks; i++) {
-            const v   = wlMin + (wlMax - wlMin) * (i / wlTicks);
-            const py  = valToY(v, wlMin, wlMax, T, B);
-            ctx.strokeStyle = gridColor;
-            ctx.lineWidth = 1;
-            ctx.setLineDash([4, 4]);
-            ctx.beginPath(); ctx.moveTo(L, py); ctx.lineTo(R, py); ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.fillStyle = isDay ? '#0046e0' : '#11dfff';
-            ctx.font = 'bold 12px Segoe UI';
-            ctx.textAlign = 'right';
-            ctx.fillText(v.toFixed(1), L - 8, py + 4);
-        }
-
-        /* y-axis label left */
-        ctx.save();
-        ctx.translate(16, T + CH/2);
-        ctx.rotate(-Math.PI/2);
-        ctx.textAlign = 'center';
-        ctx.font = 'bold 13px Segoe UI';
-        ctx.fillStyle = isDay ? '#0046e0' : '#11dfff';
-        ctx.fillText(hasGauge ? `Water Level (${th.unit})` : 'Water Level', 0, 0);
-        ctx.restore();
-
-        /* y-axis right (rainfall) */
-        const rfTicks = 4;
-        for (let i = 0; i <= rfTicks; i++) {
-            const v  = rfMin + (rfMax - rfMin) * (i / rfTicks);
-            const py = valToY(v, rfMin, rfMax, T, B);
-            ctx.fillStyle = isDay ? '#004ab5' : '#ffd400';
-            ctx.font = 'bold 12px Segoe UI';
-            ctx.textAlign = 'left';
-            ctx.fillText(v.toFixed(0), R + 8, py + 4);
-        }
-        ctx.save();
-        ctx.translate(W - 14, T + CH/2);
-        ctx.rotate(Math.PI/2);
-        ctx.textAlign = 'center';
-        ctx.font = 'bold 13px Segoe UI';
-        ctx.fillStyle = isDay ? '#004ab5' : '#ffd400';
-        ctx.fillText('Rainfall (mm)', 0, 0);
-        ctx.restore();
-
-        /* x-axis ticks & labels */
-        const maxTicks = Math.min(12, n);
-        const step = Math.ceil(n / maxTicks);
-        for (let i = 0; i < n; i += step) {
-            const px = xs[i];
-            ctx.strokeStyle = gridColor;
-            ctx.lineWidth = 1;
-            ctx.setLineDash([4, 4]);
-            ctx.beginPath(); ctx.moveTo(px, T); ctx.lineTo(px, B); ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.save();
-            ctx.translate(px, B + 8);
-            ctx.rotate(Math.PI / 4);
-            ctx.fillStyle = txtColor;
-            ctx.font = 'bold 11px Segoe UI';
-            ctx.textAlign = 'left';
-            ctx.fillText(labels[i], 0, 0);
-            ctx.restore();
-        }
-
-        /* axis border */
-        ctx.strokeStyle = isDay ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.2)';
-        ctx.lineWidth = 1.5;
+    /* y-axis grid lines & labels (water level, left) */
+    const wlTicks = 5;
+    for (let i = 0; i <= wlTicks; i++) {
+        const v  = wlMin + (wlMax - wlMin) * (i / wlTicks);
+        const py = valToY(v, wlMin, wlMax, T, B);
+        ctx.strokeStyle = gridColor;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(L, py); ctx.lineTo(R, py); ctx.stroke();
         ctx.setLineDash([]);
-        ctx.beginPath();
-        ctx.moveTo(L, T); ctx.lineTo(L, B); ctx.lineTo(R, B);
-        ctx.stroke();
-
-        ctx.restore();
-
-        /* ════════ RAINFALL BARS (rise from bottom) ════════ */
-        ctx.save();
-        const barW = Math.max(2, CW / n * 0.45);
-        rfRaw.forEach((v, i) => {
-            if (v <= 0) return;
-            const px    = xs[i];
-            const fullH = B - yr[i];
-            const animH = fullH * barProg;
-            const by    = B - animH;
-
-            /* gradient fill */
-            const gBar = ctx.createLinearGradient(0, by, 0, B);
-            if (isDay) {
-                gBar.addColorStop(0,   'rgba(0,80,200,0.90)');
-                gBar.addColorStop(0.5, 'rgba(0,60,180,0.65)');
-                gBar.addColorStop(1,   'rgba(0,80,200,0.15)');
-            } else {
-                gBar.addColorStop(0,   'rgba(255,212,0,0.75)');
-                gBar.addColorStop(0.5, 'rgba(255,160,0,0.45)');
-                gBar.addColorStop(1,   'rgba(255,212,0,0.10)');
-            }
-            ctx.fillStyle = gBar;
-            ctx.shadowColor = isDay ? '#0050c8' : '#ffd400';
-            ctx.shadowBlur  = 14;
-            ctx.beginPath();
-            ctx.roundRect(px - barW/2, by, barW, animH, [3,3,0,0]);
-            ctx.fill();
-
-            /* top cap glow line */
-            if (animH > 2) {
-                ctx.shadowBlur = 0;
-                ctx.strokeStyle = isDay ? '#0050c8' : '#ffd400';
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.moveTo(px - barW/2, by);
-                ctx.lineTo(px + barW/2, by);
-                ctx.stroke();
-            }
-        });
-        ctx.shadowBlur = 0;
-        ctx.restore();
-
-        /* ════════ WATER LEVEL LINE (draw left → right) ════════ */
-        if (lineProg > 0) {
-            /* clipping: only draw up to cursor x */
-            const clipX = L + lineProg * CW;
-
-            /* ── filled area under curve ── */
-            ctx.save();
-            ctx.beginPath();
-            ctx.rect(L, T, clipX - L, CH);
-            ctx.clip();
-
-            const grad = ctx.createLinearGradient(0, T, 0, B);
-            if (isDay) {
-                grad.addColorStop(0,   'rgba(0,70,200,0.50)');
-                grad.addColorStop(0.6, 'rgba(0,100,255,0.18)');
-                grad.addColorStop(1,   'rgba(0,70,200,0.02)');
-            } else {
-                grad.addColorStop(0,   'rgba(17,223,255,0.50)');
-                grad.addColorStop(0.6, 'rgba(17,140,255,0.18)');
-                grad.addColorStop(1,   'rgba(17,223,255,0.02)');
-            }
-
-            ctx.beginPath();
-            ctx.moveTo(xs[0], B);
-            for (let i = 0; i < n; i++) {
-                /* catmull-rom point */
-                ctx.lineTo(xs[i], ys[i]);
-            }
-            const lastDrawnX = Math.min(clipX, xs[n-1]);
-            ctx.lineTo(lastDrawnX, B);
-            ctx.closePath();
-            ctx.fillStyle = grad;
-            ctx.fill();
-            ctx.restore();
-
-            /* ── glow line outer ── */
-            ctx.save();
-            ctx.beginPath();
-            ctx.rect(L, T-10, clipX - L, CH + 20);
-            ctx.clip();
-
-            ctx.beginPath();
-            for (let i = 0; i < n; i++) {
-                const x0 = xs[Math.max(i-1,0)], y0 = ys[Math.max(i-1,0)];
-                const x1 = xs[i], y1 = ys[i];
-                const x2 = xs[Math.min(i+1,n-1)], y2 = ys[Math.min(i+1,n-1)];
-                const x3 = xs[Math.min(i+2,n-1)], y3 = ys[Math.min(i+2,n-1)];
-                if (i === 0) {
-                    ctx.moveTo(x1, y1);
-                } else {
-                    /* control points for smooth bezier */
-                    const cpx1 = x0 + (x1 - xs[Math.max(i-2,0)]) / 6;
-                    const cpy1 = y0 + (y1 - ys[Math.max(i-2,0)]) / 6;
-                    const cpx2 = x1 - (x2 - x0) / 6;
-                    const cpy2 = y1 - (y2 - y0) / 6;
-                    ctx.bezierCurveTo(cpx1, cpy1, cpx2, cpy2, x1, y1);
-                }
-            }
-            ctx.strokeStyle = '#11dfff';
-            ctx.lineWidth   = 7;
-            ctx.shadowColor = '#11dfff';
-            ctx.shadowBlur  = 30;
-            ctx.setLineDash([]);
-            ctx.stroke();
-
-            /* white core */
-            ctx.beginPath();
-            for (let i = 0; i < n; i++) {
-                const x0 = xs[Math.max(i-1,0)], y0 = ys[Math.max(i-1,0)];
-                const x1 = xs[i], y1 = ys[i];
-                const x2 = xs[Math.min(i+1,n-1)], y2 = ys[Math.min(i+1,n-1)];
-                if (i === 0) {
-                    ctx.moveTo(x1, y1);
-                } else {
-                    const cpx1 = x0 + (x1 - xs[Math.max(i-2,0)]) / 6;
-                    const cpy1 = y0 + (y1 - ys[Math.max(i-2,0)]) / 6;
-                    const cpx2 = x1 - (x2 - x0) / 6;
-                    const cpy2 = y1 - (y2 - y0) / 6;
-                    ctx.bezierCurveTo(cpx1, cpy1, cpx2, cpy2, x1, y1);
-                }
-            }
-            ctx.strokeStyle = '#ffffff';
-            ctx.lineWidth   = 2;
-            ctx.shadowBlur  = 12;
-            ctx.stroke();
-            ctx.shadowBlur  = 0;
-            ctx.restore();
-
-            /* ── animated cursor dot at leading edge ── */
-            if (!done) {
-                const ci = Math.floor(cursorIdx);
-                const cf = cursorIdx - ci;
-                const ci2 = Math.min(ci + 1, n - 1);
-                const curX = xs[ci] + (xs[ci2] - xs[ci]) * cf;
-                const curY = ys[ci] + (ys[ci2] - ys[ci]) * cf;
-                /* outer pulse ring */
-                ctx.save();
-                ctx.strokeStyle = '#11dfff';
-                ctx.lineWidth   = 2.5;
-                ctx.globalAlpha = 0.4 + 0.3 * Math.sin(now * 0.012);
-                ctx.shadowColor = '#11dfff';
-                ctx.shadowBlur  = 20;
-                ctx.beginPath();
-                ctx.arc(curX, curY, 14, 0, Math.PI * 2);
-                ctx.stroke();
-                ctx.globalAlpha = 1;
-                /* inner solid dot */
-                ctx.fillStyle  = '#11dfff';
-                ctx.shadowBlur = 30;
-                ctx.beginPath();
-                ctx.arc(curX, curY, 6, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.shadowBlur = 0;
-                ctx.restore();
-            }
-
-            /* ── data point dots (pop in after line reaches them) ── */
-            if (n <= 60) {
-                for (let i = 0; i < n; i++) {
-                    /* point becomes visible once the line passes it */
-                    const arrivedAt = i / (n - 1);
-                    if (lineProg < arrivedAt) { ptPop[i] = 0; continue; }
-                    /* pop animation: scale 0→1 quickly after arrival */
-                    const popStart = arrivedAt;
-                    const popEnd   = popStart + 0.06;
-                    const pt = Math.min((lineProg - popStart) / (popEnd - popStart + 0.001), 1);
-                    ptPop[i] = easeOutBounce(pt);
-
-                    if (ptPop[i] <= 0) continue;
-                    const s = ptPop[i];
-
-                    ctx.save();
-                    ctx.translate(xs[i], ys[i]);
-                    ctx.scale(s, s);
-
-                    /* outer ring pulse (idle) */
-                    const pulse = done ? (0.5 + 0.5 * Math.sin(now * 0.004 + i * 0.8)) : 0;
-                    if (done && pulse > 0) {
-                        ctx.strokeStyle = '#11dfff';
-                        ctx.lineWidth   = 1.5;
-                        ctx.globalAlpha = pulse * 0.55;
-                        ctx.shadowColor = '#11dfff';
-                        ctx.shadowBlur  = 12;
-                        ctx.beginPath();
-                        ctx.arc(0, 0, 11, 0, Math.PI * 2);
-                        ctx.stroke();
-                        ctx.globalAlpha = 1;
-                        ctx.shadowBlur  = 0;
-                    }
-
-                    /* dot fill */
-                    ctx.fillStyle  = '#ffffff';
-                    ctx.shadowColor = '#11dfff';
-                    ctx.shadowBlur  = 16;
-                    ctx.strokeStyle = '#11dfff';
-                    ctx.lineWidth   = 2.5;
-                    ctx.beginPath();
-                    ctx.arc(0, 0, 5, 0, Math.PI * 2);
-                    ctx.fill();
-                    ctx.stroke();
-                    ctx.restore();
-                }
-            }
-        }
-
-        /* ════════ THRESHOLD LINES (sweep left→right, then flow) ════════ */
-        if (thProg > 0) {
-            ctx.save();
-            benches.forEach(line => {
-                const py = valToY(line.v, wlMin, wlMax, T, B);
-                if (py < T || py > B) return;
-                const drawTo = L + thProg * CW;
-
-                /* glow dashed line — offset flows continuously once complete */
-                const dashOffset = done ? -(now / 35) % 16 : 0;
-                ctx.strokeStyle = line.color;
-                ctx.lineWidth   = 3;
-                ctx.setLineDash([10, 6]);
-                ctx.lineDashOffset = dashOffset;
-                ctx.shadowColor = line.color;
-                ctx.shadowBlur  = 12;
-                ctx.beginPath();
-                ctx.moveTo(L, py);
-                ctx.lineTo(drawTo, py);
-                ctx.stroke();
-                ctx.shadowBlur = 0;
-                ctx.setLineDash([]);
-
-                /* label badge fades in last 15% of sweep */
-                const lblAlpha = Math.min((thProg - 0.85) / 0.15, 1);
-                if (lblAlpha > 0) {
-                    const lbl = `${line.label}  ${line.v}`;
-                    ctx.font = 'bold 14px Segoe UI';
-                    const tw = ctx.measureText(lbl).width;
-                    const bx = R - tw - 18, by = py - 22, bw = tw + 14, bh = 22;
-                    ctx.globalAlpha = lblAlpha;
-                    ctx.fillStyle   = 'rgba(0,0,0,0.75)';
-                    ctx.beginPath();
-                    ctx.roundRect(bx, by, bw, bh, 5);
-                    ctx.fill();
-                    ctx.strokeStyle = line.color;
-                    ctx.lineWidth   = 1.5;
-                    ctx.stroke();
-                    ctx.fillStyle  = line.color;
-                    ctx.textAlign  = 'left';
-                    ctx.fillText(lbl, bx + 7, by + 15);
-                    ctx.globalAlpha = 1;
-                }
-            });
-            ctx.restore();
-        }
-
-        /* ════════ LEGEND ════════ */
-        ctx.save();
-        ctx.font = 'bold 13px Segoe UI';
-        ctx.textAlign = 'left';
-        const legendItems = [
-            { color: isDay ? '#0046e0' : '#11dfff', label: 'Water Level' },
-            { color: isDay ? '#004ab5' : '#ffd400', label: 'Hourly Rainfall' }
-        ];
-        let lx = L;
-        legendItems.forEach(item => {
-            ctx.fillStyle   = item.color;
-            ctx.shadowColor = item.color;
-            ctx.shadowBlur  = 8;
-            ctx.fillRect(lx, T - 22, 28, 4);
-            ctx.shadowBlur  = 0;
-            ctx.fillStyle   = txtColor;
-            ctx.fillText(item.label, lx + 34, T - 14);
-            lx += ctx.measureText(item.label).width + 60;
-        });
-        ctx.restore();
-
-        /* ════════ SCANLINES (night only) ════════ */
-        if (!isDay) {
-            ctx.save();
-            ctx.globalAlpha = 0.025;
-            ctx.fillStyle = '#000';
-            for (let sy = T; sy < B; sy += 3) {
-                ctx.fillRect(L, sy, CW, 1);
-            }
-            ctx.globalAlpha = 1;
-            ctx.restore();
-        }
-
-        /* ── keep looping until destroyed ── */
-        _raf = requestAnimationFrame(draw);
+        ctx.fillStyle = isDay ? '#0046e0' : '#11dfff';
+        ctx.font = 'bold 12px Segoe UI';
+        ctx.textAlign = 'right';
+        ctx.fillText(v.toFixed(1), L - 8, py + 4);
     }
 
-    _raf = requestAnimationFrame(draw);
-    /* store a destroy handle so renderSlide cleanup works */
-    liveChartInstance = { _destroyed: false, destroy() { this._destroyed = true; if(_raf){cancelAnimationFrame(_raf);_raf=null;} } };
+    /* y-axis label left */
+    ctx.save();
+    ctx.translate(16, T + CH/2);
+    ctx.rotate(-Math.PI/2);
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 13px Segoe UI';
+    ctx.fillStyle = isDay ? '#0046e0' : '#11dfff';
+    ctx.fillText(hasGauge ? `Water Level (${th.unit})` : 'Water Level', 0, 0);
+    ctx.restore();
+
+    /* y-axis right (rainfall) */
+    const rfTicks = 4;
+    for (let i = 0; i <= rfTicks; i++) {
+        const v  = rfMin + (rfMax - rfMin) * (i / rfTicks);
+        const py = valToY(v, rfMin, rfMax, T, B);
+        ctx.fillStyle = isDay ? '#004ab5' : '#ffd400';
+        ctx.font = 'bold 12px Segoe UI';
+        ctx.textAlign = 'left';
+        ctx.fillText(v.toFixed(0), R + 8, py + 4);
+    }
+    ctx.save();
+    ctx.translate(W - 14, T + CH/2);
+    ctx.rotate(Math.PI/2);
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 13px Segoe UI';
+    ctx.fillStyle = isDay ? '#004ab5' : '#ffd400';
+    ctx.fillText('Rainfall (mm)', 0, 0);
+    ctx.restore();
+
+    /* x-axis ticks & labels */
+    const maxTicks = Math.min(12, n);
+    const step = Math.ceil(n / maxTicks);
+    for (let i = 0; i < n; i += step) {
+        const px = xs[i];
+        ctx.strokeStyle = gridColor;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(px, T); ctx.lineTo(px, B); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.save();
+        ctx.translate(px, B + 8);
+        ctx.rotate(Math.PI / 4);
+        ctx.fillStyle = txtColor;
+        ctx.font = 'bold 11px Segoe UI';
+        ctx.textAlign = 'left';
+        ctx.fillText(labels[i], 0, 0);
+        ctx.restore();
+    }
+
+    /* axis border */
+    ctx.strokeStyle = isDay ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.2)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(L, T); ctx.lineTo(L, B); ctx.lineTo(R, B);
+    ctx.stroke();
+
+    ctx.restore();
+
+    /* ════════ RAINFALL BARS (full height, no animation) ════════ */
+    ctx.save();
+    const barW = Math.max(2, CW / n * 0.45);
+    rfRaw.forEach((v, i) => {
+        if (v <= 0) return;
+        const px   = xs[i];
+        const barH = B - yr[i];
+        const by   = B - barH;
+
+        const gBar = ctx.createLinearGradient(0, by, 0, B);
+        if (isDay) {
+            gBar.addColorStop(0,   'rgba(0,80,200,0.95)');
+            gBar.addColorStop(0.5, 'rgba(0,60,180,0.75)');
+            gBar.addColorStop(1,   'rgba(0,80,200,0.20)');
+        } else {
+            gBar.addColorStop(0,   'rgba(255,212,0,0.90)');
+            gBar.addColorStop(0.5, 'rgba(255,160,0,0.60)');
+            gBar.addColorStop(1,   'rgba(255,212,0,0.15)');
+        }
+        ctx.fillStyle = gBar;
+        ctx.shadowColor = isDay ? '#0050c8' : '#ffd400';
+        ctx.shadowBlur  = 10;
+        ctx.beginPath();
+        ctx.roundRect(px - barW/2, by, barW, barH, [3,3,0,0]);
+        ctx.fill();
+
+        /* top cap line */
+        if (barH > 2) {
+            ctx.shadowBlur  = 0;
+            ctx.strokeStyle = isDay ? '#0050c8' : '#ffd400';
+            ctx.lineWidth   = 2;
+            ctx.beginPath();
+            ctx.moveTo(px - barW/2, by);
+            ctx.lineTo(px + barW/2, by);
+            ctx.stroke();
+        }
+    });
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    /* ════════ WATER LEVEL — filled area under curve ════════ */
+    ctx.save();
+    const grad = ctx.createLinearGradient(0, T, 0, B);
+    if (isDay) {
+        grad.addColorStop(0,   'rgba(0,70,200,0.50)');
+        grad.addColorStop(0.6, 'rgba(0,100,255,0.18)');
+        grad.addColorStop(1,   'rgba(0,70,200,0.02)');
+    } else {
+        grad.addColorStop(0,   'rgba(17,223,255,0.50)');
+        grad.addColorStop(0.6, 'rgba(17,140,255,0.18)');
+        grad.addColorStop(1,   'rgba(17,223,255,0.02)');
+    }
+    ctx.beginPath();
+    ctx.moveTo(xs[0], B);
+    for (let i = 0; i < n; i++) ctx.lineTo(xs[i], ys[i]);
+    ctx.lineTo(xs[n-1], B);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.restore();
+
+    /* ════════ WATER LEVEL — smooth bezier line ════════ */
+    function drawWLLine(strokeCol, lineW, blur) {
+        ctx.save();
+        ctx.beginPath();
+        for (let i = 0; i < n; i++) {
+            const x0 = xs[Math.max(i-1,0)], y0 = ys[Math.max(i-1,0)];
+            const x1 = xs[i],               y1 = ys[i];
+            const x2 = xs[Math.min(i+1,n-1)], y2 = ys[Math.min(i+1,n-1)];
+            if (i === 0) {
+                ctx.moveTo(x1, y1);
+            } else {
+                const cpx1 = x0 + (x1 - xs[Math.max(i-2,0)]) / 6;
+                const cpy1 = y0 + (y1 - ys[Math.max(i-2,0)]) / 6;
+                const cpx2 = x1 - (x2 - x0) / 6;
+                const cpy2 = y1 - (y2 - y0) / 6;
+                ctx.bezierCurveTo(cpx1, cpy1, cpx2, cpy2, x1, y1);
+            }
+        }
+        ctx.strokeStyle = strokeCol;
+        ctx.lineWidth   = lineW;
+        ctx.shadowColor = strokeCol;
+        ctx.shadowBlur  = blur;
+        ctx.setLineDash([]);
+        ctx.stroke();
+        ctx.restore();
+    }
+    const lineCol = isDay ? '#0046e0' : '#11dfff';
+    drawWLLine(lineCol, 7, 20);   /* glow outer */
+    drawWLLine('#ffffff', 2, 0);  /* white core */
+
+    /* ════════ DATA POINT DOTS ════════ */
+    if (n <= 60) {
+        for (let i = 0; i < n; i++) {
+            ctx.save();
+            ctx.fillStyle   = '#ffffff';
+            ctx.strokeStyle = lineCol;
+            ctx.lineWidth   = 2.5;
+            ctx.shadowColor = lineCol;
+            ctx.shadowBlur  = 12;
+            ctx.beginPath();
+            ctx.arc(xs[i], ys[i], 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+
+    /* ════════ THRESHOLD LINES ════════ */
+    ctx.save();
+    benches.forEach(line => {
+        const py = valToY(line.v, wlMin, wlMax, T, B);
+        if (py < T || py > B) return;
+
+        ctx.strokeStyle    = line.color;
+        ctx.lineWidth      = 3;
+        ctx.setLineDash([10, 6]);
+        ctx.lineDashOffset = 0;
+        ctx.shadowColor    = line.color;
+        ctx.shadowBlur     = 10;
+        ctx.beginPath();
+        ctx.moveTo(L, py); ctx.lineTo(R, py);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        ctx.setLineDash([]);
+
+        /* label badge */
+        const lbl = `${line.label}  ${line.v}`;
+        ctx.font = 'bold 14px Segoe UI';
+        const tw = ctx.measureText(lbl).width;
+        const bx = R - tw - 18, by = py - 22, bw = tw + 14, bh = 22;
+        ctx.fillStyle = 'rgba(0,0,0,0.75)';
+        ctx.beginPath();
+        ctx.roundRect(bx, by, bw, bh, 5);
+        ctx.fill();
+        ctx.strokeStyle = line.color;
+        ctx.lineWidth   = 1.5;
+        ctx.stroke();
+        ctx.fillStyle  = line.color;
+        ctx.textAlign  = 'left';
+        ctx.fillText(lbl, bx + 7, by + 15);
+    });
+    ctx.restore();
+
+    /* ════════ LEGEND ════════ */
+    ctx.save();
+    ctx.font = 'bold 13px Segoe UI';
+    ctx.textAlign = 'left';
+    const legendItems = [
+        { color: isDay ? '#0046e0' : '#11dfff', label: 'Water Level' },
+        { color: isDay ? '#004ab5' : '#ffd400', label: 'Hourly Rainfall' }
+    ];
+    let lx = L;
+    legendItems.forEach(item => {
+        ctx.fillStyle   = item.color;
+        ctx.shadowColor = item.color;
+        ctx.shadowBlur  = 6;
+        ctx.fillRect(lx, T - 22, 28, 4);
+        ctx.shadowBlur  = 0;
+        ctx.fillStyle   = txtColor;
+        ctx.fillText(item.label, lx + 34, T - 14);
+        lx += ctx.measureText(item.label).width + 60;
+    });
+    ctx.restore();
+
+    /* ════════ SCANLINES (night only) ════════ */
+    if (!isDay) {
+        ctx.save();
+        ctx.globalAlpha = 0.025;
+        ctx.fillStyle = '#000';
+        for (let sy = T; sy < B; sy += 3) {
+            ctx.fillRect(L, sy, CW, 1);
+        }
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+
+    /* no RAF loop needed — static draw, cleanup stub for compatibility */
+    liveChartInstance = { _destroyed: false, destroy() { this._destroyed = true; } };
 }
 
 /* ================= ROTATION METRONOME ENGINE ================= */
