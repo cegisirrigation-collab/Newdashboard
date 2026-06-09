@@ -885,46 +885,6 @@ function buildHistoricalGraph(historyRecords, th, hasGauge, currentGaugeName) {
 
     ctx.restore();
 
-    /* ════════ RAINFALL BARS (full height, no animation) ════════ */
-    ctx.save();
-    const barW = Math.max(2, CW / n * 0.45);
-    rfRaw.forEach((v, i) => {
-        if (v <= 0) return;
-        const px   = xs[i];
-        const barH = B - yr[i];
-        const by   = B - barH;
-
-        const gBar = ctx.createLinearGradient(0, by, 0, B);
-        if (isDay) {
-            gBar.addColorStop(0,   'rgba(0,80,200,0.95)');
-            gBar.addColorStop(0.5, 'rgba(0,60,180,0.75)');
-            gBar.addColorStop(1,   'rgba(0,80,200,0.20)');
-        } else {
-            gBar.addColorStop(0,   'rgba(255,212,0,0.90)');
-            gBar.addColorStop(0.5, 'rgba(255,160,0,0.60)');
-            gBar.addColorStop(1,   'rgba(255,212,0,0.15)');
-        }
-        ctx.fillStyle = gBar;
-        ctx.shadowColor = isDay ? '#0050c8' : '#ffd400';
-        ctx.shadowBlur  = 10;
-        ctx.beginPath();
-        ctx.roundRect(px - barW/2, by, barW, barH, [3,3,0,0]);
-        ctx.fill();
-
-        /* top cap line */
-        if (barH > 2) {
-            ctx.shadowBlur  = 0;
-            ctx.strokeStyle = isDay ? '#0050c8' : '#ffd400';
-            ctx.lineWidth   = 2;
-            ctx.beginPath();
-            ctx.moveTo(px - barW/2, by);
-            ctx.lineTo(px + barW/2, by);
-            ctx.stroke();
-        }
-    });
-    ctx.shadowBlur = 0;
-    ctx.restore();
-
     /* ════════ WATER LEVEL — filled area under curve ════════ */
     ctx.save();
     const grad = ctx.createLinearGradient(0, T, 0, B);
@@ -992,6 +952,33 @@ function buildHistoricalGraph(historyRecords, th, hasGauge, currentGaugeName) {
             ctx.restore();
         }
     }
+
+    /* ════════ RAINFALL BARS — drawn on top of water level fill ════════ */
+    ctx.save();
+    const barCol    = isDay ? '#0050c8' : '#ffd400';
+    const barColMid = isDay ? '#0040a0' : '#ffaa00';
+    const barW = Math.max(3, CW / n * 0.5);
+    rfRaw.forEach((v, i) => {
+        if (v <= 0) return;
+        const px   = xs[i];
+        const barH = B - yr[i];
+        if (barH <= 0) return;
+        const by   = B - barH;
+
+        /* solid colour fill — no gradient, no shadow, maximum visibility */
+        ctx.fillStyle = barCol;
+        ctx.fillRect(px - barW / 2, by, barW, barH);
+
+        /* darker middle stripe for depth */
+        const stripeW = Math.max(1, barW * 0.4);
+        ctx.fillStyle = barColMid;
+        ctx.fillRect(px - stripeW / 2, by + 1, stripeW, barH - 1);
+
+        /* bright top cap — 3px solid line */
+        ctx.fillStyle = isDay ? '#ffffff' : '#fffbe0';
+        ctx.fillRect(px - barW / 2, by, barW, 3);
+    });
+    ctx.restore();
 
     /* ════════ THRESHOLD LINES ════════ */
     ctx.save();
